@@ -1,0 +1,106 @@
+# Release workflow — auto-generates a source tarball on tag push and attaches
+# it to a GitHub Release. Derived from the project-template at
+# https://github.com/Kinsman4249/.github-private/blob/main/.github/workflow-templates/release.yml
+# Adapted for this project: bash scripts only, no compilation step.
+#
+# HOW TO CUT A RELEASE
+# --------------------
+# From your local clone:
+#
+#     git tag v1.1.0
+#     git push --tags
+#
+# A new GitHub Release appears under the Releases tab once this workflow finishes
+# (a couple of minutes). Subsequent releases bump the version per SemVer:
+# v1.2.0 for new features, v1.1.1 for bug fixes only, etc.
+#
+# MANUAL RE-RUN
+# -------------
+# Repo > Actions tab > Release > Run workflow. Enter an existing tag name.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v1.0.0). Must already exist.'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Bundle source
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Lint shell scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          # bash -n on every shell script in the project
+          mapfile -t SCRIPTS < <(find . -type f \( -name '*.sh' -o -path './bin/*' \) ! -path './.git/*')
+          for f in "${SCRIPTS[@]}"; do
+            echo "bash -n  $f"
+            bash -n "$f"
+          done
+          # shellcheck (allow warnings; fail on errors)
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          fi
+          shellcheck --severity=error -e SC1091,SC1090 "${SCRIPTS[@]}"
+
+      - name: Bundle source tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          # Strip leading 'v' so the directory is OwnTrackDebianHardener-1.0/ not -v1.0/
+          ver="${tag#v}"
+          name="${{ github.event.repository.name }}-${ver}"
+          mkdir -p dist
+          git archive --format=tar.gz --prefix="${name}/" -o "dist/${name}.tar.gz" HEAD
+          git archive --format=zip    --prefix="${name}/" -o "dist/${name}.zip"    HEAD
+          ls -la dist/
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-bundle
+          path: dist/**
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts (debug)
+        shell: bash
+        run: find artifacts -type f -printf "  %p (%s bytes)\n"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: ${{ github.event.inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          files: artifacts/**/*
+          fail_on_unmatched_files: false

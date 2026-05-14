@@ -1,0 +1,63 @@
+# cf-owntracks: OwnTracks vhost (templated by installer)
+#
+# Substitutions performed at install time:
+#   __SERVER_NAME__    public hostname (e.g. owntracks.example.com)
+#   __OWNTRACKS_PORT__ local recorder port (default 8083)
+#   __TLS_CERT__       fullchain cert path
+#   __TLS_KEY__        private key path
+#   __MTLS_INCLUDE__   include directive for mTLS snippet (blank if disabled)
+
+# --- Port 80: redirect-only ---------------------------------------------------
+server {
+    listen      80;
+    listen [::]:80;
+    server_name __SERVER_NAME__;
+
+    # Firewall already restricts source to Cloudflare; we just bounce to https.
+    return 301 https://$host$request_uri;
+}
+
+# --- Port 443: the actual app ------------------------------------------------
+server {
+    # nginx 1.22 (Debian 12 bookworm) uses old-style http2 on the listen directive.
+    # nginx 1.25+ prefers a separate `http2 on;` line, but that fails to parse on 1.22.
+    listen      443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name __SERVER_NAME__;
+
+    ssl_certificate     __TLS_CERT__;
+    ssl_certificate_key __TLS_KEY__;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache   shared:cfo:10m;
+    ssl_session_timeout 10m;
+
+    # Cloudflare real-ip rewrite (managed by cf-owntracks)
+    include /etc/nginx/snippets/cloudflare-realip.conf;
+
+    # Belt-and-suspenders: nginx-level allow/deny (post real-ip rewrite)
+    include /etc/nginx/snippets/cloudflare-allow.conf;
+
+    # Authenticated Origin Pulls (mTLS) — installer leaves the include or comments it
+    __MTLS_INCLUDE__
+
+    # OwnTracks payload sizes can exceed nginx default (1m)
+    client_max_body_size 4m;
+
+    # Forward client info to recorder
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    # WebSocket upgrade headers (OwnTracks uses /ws)
+    proxy_http_version 1.1;
+    proxy_set_header   Upgrade    $http_upgrade;
+    proxy_set_header   Connection $connection_upgrade;
+
+    location / {
+        proxy_pass http://127.0.0.1:__OWNTRACKS_PORT__;
+        proxy_read_timeout 75s;
+    }
+}

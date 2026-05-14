@@ -1,0 +1,24 @@
+# cf-owntracks daemon config — managed by installer.
+# Shell variable syntax (sourced by bash). Quote values containing spaces.
+
+# Public FQDN of the OwnTracks vhost (must match the Cloudflare hostname).
+CFO_SERVER_NAME="owntracks.example.com"
+
+# Local port the OwnTracks recorder listens on (bound to 127.0.0.1).
+CFO_OWNTRACKS_PORT=8083
+
+# Firewall backend the daemon manages. One of: nftables, ufw, iptables.
+# Set at install time by autodetection (or --force).
+CFO_FW_BACKEND="nftables"
+
+# TLS material for the 443 vhost.
+CFO_TLS_CERT="/etc/ssl/cloudflare/origin.pem"
+CFO_TLS_KEY="/etc/ssl/cloudflare/origin.key"
+
+# Authenticated Origin Pulls (mTLS): 1 = enforce, 0 = disabled.
+# Requires the AOP toggle to be ON in the Cloudflare dashboard for this zone.
+CFO_MTLS_ENABLED=1
+
+# Whether the optional global 80->443 redirect default_server was installed.
+# Informational only; the actual file is /etc/nginx/sites-enabled/00-cf-global-redirect.conf
+CFO_GLOBAL_REDIRECT=0

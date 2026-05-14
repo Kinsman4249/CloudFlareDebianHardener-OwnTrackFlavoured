@@ -1,0 +1,15 @@
+[Unit]
+Description=Daily refresh of Cloudflare allowlist for OwnTracks
+Documentation=file:///usr/local/share/cf-owntracks/README.md
+
+[Timer]
+# Daily at a randomized offset so we don't stampede Cloudflare at midnight UTC.
+OnCalendar=daily
+RandomizedDelaySec=1h
+# Catch up on missed runs (e.g., laptop suspended overnight, server was down).
+Persistent=true
+# Don't fire immediately if the timer is enabled mid-day; wait for the schedule.
+AccuracySec=1m
+
+[Install]
+WantedBy=timers.target

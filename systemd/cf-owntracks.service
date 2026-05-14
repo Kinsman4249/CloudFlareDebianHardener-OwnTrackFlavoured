@@ -1,0 +1,37 @@
+[Unit]
+Description=Refresh Cloudflare allowlist for OwnTracks (firewall + nginx)
+Documentation=file:///usr/local/share/cf-owntracks/README.md
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/cf-owntracks-refresh
+
+# --- Hardening ---------------------------------------------------------------
+# We need root (firewall, nginx reload). We narrow the writable surface via
+# ProtectSystem=strict + ReadWritePaths. We do NOT use PrivateNetwork (need
+# outbound HTTPS to cloudflare.com) and we keep ambient capabilities (nft and
+# iptables need CAP_NET_ADMIN; nginx reload needs to signal pid 1 of nginx).
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+NoNewPrivileges=true
+PrivateTmp=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictNamespaces=true
+# Paths the daemon legitimately writes to.
+ReadWritePaths=/etc/nginx /etc/cf-owntracks /var/lib/cf-owntracks /etc/ssl/cloudflare /run /var/log
+
+TimeoutStartSec=300
+# Don't restart on failure — the timer will pick it up tomorrow. A failed run
+# means we kept the previous safe state, which is the correct behavior.
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

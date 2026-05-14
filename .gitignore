@@ -1,0 +1,17 @@
+# Build artifacts
+*.tar.gz
+*.deb
+
+# Local testing scratch
+/tmp/
+*.tmp
+*.bak
+*.orig
+.DS_Store
+
+# Editor temp files
+*.swp
+*.swo
+*~
+.idea/
+.vscode/

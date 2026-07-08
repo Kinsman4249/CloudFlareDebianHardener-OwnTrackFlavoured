@@ -30,9 +30,10 @@ MODE
 
 CORE SETTINGS (prompted interactively when omitted; existing config = defaults)
     --server-name <host>      Public FQDN of the OwnTracks vhost.
-                              Auto-detected when omitted: nginx server_name
-                              directives first, reverse DNS of the public IP
-                              as fallback.
+                              Auto-detected when omitted, in order: OwnTracks
+                              recorder config (/etc/default/ot-recorder),
+                              nginx server_name directives, reverse DNS of
+                              the public IP.
     --cert <path>             TLS certificate (fullchain)
     --key <path>              TLS private key
     --owntracks-port <port>   Local recorder port (default: 8083)
@@ -239,7 +240,25 @@ if (( ${#ARG_MANAGE_PORTS[@]} > 0 )); then
 fi
 
 # ---- Server-name auto-detection (when not provided by flag or prior config) --------
-# Chain: nginx server_name directives -> reverse DNS of the public IP.
+# Chain: OwnTracks recorder config -> nginx server_name directives -> reverse
+# DNS of the public IP. The recorder's own config is checked first — it knows
+# the public URL it serves under, which beats inferring from nginx.
+if [[ -z "$SERVER_NAME" ]] && (( DO_UNINSTALL == 0 )) && (( DO_DIAGNOSTICS == 0 )); then
+    OT_TMP="$(mktemp)"
+    discover_owntracks_hostname > "$OT_TMP" 2>/dev/null || true
+    OT_COUNT=$(grep -c . "$OT_TMP" || true)
+    if (( OT_COUNT >= 1 )); then
+        SERVER_NAME="$(head -1 "$OT_TMP")"
+        if (( OT_COUNT > 1 )); then
+            log_info "OwnTracks recorder config mentions ${OT_COUNT} hostnames:"
+            sed 's/^/          /' "$OT_TMP" >&2
+            log_info "auto-selected: ${SERVER_NAME} (change at the prompt or with --server-name)"
+        else
+            log_info "auto-detected server name from OwnTracks recorder config: ${SERVER_NAME}"
+        fi
+    fi
+    rm -f "$OT_TMP"
+fi
 if [[ -z "$SERVER_NAME" ]] && (( DO_UNINSTALL == 0 )) && (( DO_DIAGNOSTICS == 0 )); then
     HN_TMP="$(mktemp)"
     discover_nginx_hostnames > "$HN_TMP" 2>/dev/null || true

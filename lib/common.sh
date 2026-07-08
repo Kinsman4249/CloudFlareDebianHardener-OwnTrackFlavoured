@@ -495,6 +495,34 @@ discover_all_nginx_ports() {
 }
 
 # ---- Hostname discovery -----------------------------------------------------------
+# Candidate hostnames from the OwnTracks recorder's own configuration — the
+# best source, since the recorder knows the public URL it serves under.
+# Priority inside each file: URL-shaped values (e.g. OTR_HTTPPREFIX) first,
+# then FQDN-valued OTR_HOST (the MQTT broker — often the same domain).
+# Bind addresses (localhost/127.x/0.0.0.0) are filtered out.
+# Extra file arguments override the default search paths (for testing).
+discover_owntracks_hostname() {
+    local -a files=("$@")
+    if (( ${#files[@]} == 0 )); then
+        files=(/etc/default/ot-recorder /etc/ot-recorder/ot-recorder.conf /usr/local/etc/ot-recorder.conf)
+    fi
+    local f tmp
+    tmp="$(mktemp)"
+    for f in "${files[@]}"; do
+        [[ -r "$f" ]] || continue
+        # 1) hosts inside URL-shaped values (https://host/... or http://host:port)
+        sed -n 's/.*https\?:\/\/\([A-Za-z0-9.-]*\).*/\1/p' "$f" >> "$tmp"
+        # 2) bare hostname values of the interesting OTR_ variables
+        sed -n "s/^[[:space:]]*OTR_\(HTTPPREFIX\|HOST\)[[:space:]]*=[[:space:]]*[\"']\?\([A-Za-z0-9.-]*\).*/\2/p" "$f" >> "$tmp"
+    done
+    # Order-preserving dedupe, keep only non-local FQDNs.
+    awk '!seen[$0]++' "$tmp" \
+        | grep -E '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$' \
+        | grep -viE '^(localhost|127\.|0\.0\.0\.0)' || true
+    rm -f "$tmp"
+    return 0
+}
+
 # All server_name values nginx knows about (any vhost), one per line, deduped.
 # Filters out catch-alls (_, *, localhost, bare IPs) and non-FQDN tokens.
 discover_nginx_hostnames() {

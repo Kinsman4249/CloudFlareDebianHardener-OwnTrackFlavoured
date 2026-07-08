@@ -64,10 +64,13 @@ nothing is clobbered.**
 Two things it works out on its own:
 
 - **Server name** — when you don't pass `--server-name` (and no prior config
-  exists), it reads the `server_name` directives from your running nginx and
-  offers what it finds; if nginx has none, it falls back to the reverse-DNS
-  PTR of the box's public IP. Always shown as a prompt default, never applied
-  silently — PTR names in particular are often generic ISP hostnames.
+  exists), it tries three sources in order: the **OwnTracks recorder's own
+  config** (`/etc/default/ot-recorder` — URL-shaped values like
+  `OTR_HTTPPREFIX` first, then an FQDN-valued `OTR_HOST`; the recorder knows
+  the public URL it serves under, so this beats inference), then nginx
+  `server_name` directives, then the reverse-DNS PTR of the box's public IP.
+  Always shown as a prompt default, never applied silently — PTR names in
+  particular are often generic ISP hostnames.
 - **The origin certificate** — see the next section.
 
 Non-interactive (with automatic cert):
@@ -121,7 +124,7 @@ sudo ./install.sh --diagnostics
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `--deploy` | test mode | Enforce. Without it you're observing only |
-| `--server-name <host>` | auto-detect | Public FQDN (auto: nginx `server_name` → reverse-DNS PTR) |
+| `--server-name <host>` | auto-detect | Public FQDN (auto: OwnTracks config → nginx `server_name` → reverse-DNS PTR) |
 | `--cert <path> --key <path>` | prompt/config | TLS material (or use `--cf-auto-cert`) |
 | `--cf-auto-cert` | off | Provision a 15-year Origin CA cert via the Cloudflare API |
 | `--cf-origin-ca-key <k>` / `--cf-api-token <t>` | env | Credentials for `--cf-auto-cert` (prefer `CF_ORIGIN_CA_KEY` / `CF_API_TOKEN` env vars) |

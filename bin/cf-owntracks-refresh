@@ -366,12 +366,30 @@ case "${CFO_FW_BACKEND}" in
     nftables)
         nftables_render "$CFO_MODE" "$PORTS_CSV" "$SSH_CSV" \
             "$V4_VALID" "$V6_VALID" "$ASN4_FINAL" "$ASN6_FINAL" "$ALLOW4" "$ALLOW6" > "$NFT_NEW"
-        nftables_check "$NFT_NEW" >/dev/null || die "nftables ruleset failed validation"
+        # On validation failure: log nft's ACTUAL complaint (not just "failed")
+        # and keep a copy of the offending ruleset for offline inspection —
+        # the scratch dir vanishes on exit, so the copy goes to the state dir.
+        if ! chk_out="$(nftables_check "$NFT_NEW" 2>&1)"; then
+            mkdir -p "$CFO_STATE_DIR"
+            cp -f "$NFT_NEW" "${CFO_STATE_DIR}/failed-ruleset.nft" 2>/dev/null || true
+            printf '%s\n' "$chk_out" | head -12 | while IFS= read -r line; do
+                log_error "nft: $line"
+            done
+            die "nftables ruleset failed validation (ruleset saved: ${CFO_STATE_DIR}/failed-ruleset.nft)"
+        fi
         ;;
     iptables)
         iptables_render_v4 "$CFO_MODE" "$PORTS_CSV" "$SSH_CSV" "$V4_VALID" "$ASN4_FINAL" "$ALLOW4" > "$IPT_V4_NEW"
         iptables_render_v6 "$CFO_MODE" "$PORTS_CSV" "$SSH_CSV" "$V6_VALID" "$ASN6_FINAL" "$ALLOW6" > "$IPT_V6_NEW"
-        iptables_check "$IPT_V4_NEW" "$IPT_V6_NEW" >/dev/null || die "iptables ruleset failed validation"
+        if ! chk_out="$(iptables_check "$IPT_V4_NEW" "$IPT_V6_NEW" 2>&1)"; then
+            mkdir -p "$CFO_STATE_DIR"
+            cp -f "$IPT_V4_NEW" "${CFO_STATE_DIR}/failed-ruleset.v4" 2>/dev/null || true
+            cp -f "$IPT_V6_NEW" "${CFO_STATE_DIR}/failed-ruleset.v6" 2>/dev/null || true
+            printf '%s\n' "$chk_out" | head -12 | while IFS= read -r line; do
+                log_error "iptables: $line"
+            done
+            die "iptables ruleset failed validation (rulesets saved: ${CFO_STATE_DIR}/failed-ruleset.v4/.v6)"
+        fi
         ;;
     ufw)
         : # ufw is imperative (no render step); it is applied rule-by-rule below

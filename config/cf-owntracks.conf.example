@@ -3,7 +3,7 @@
 # `systemctl start cf-owntracks.service` to apply changes.
 
 # Version marker written by the installer (informational).
-CFO_VERSION="2.2.1"
+CFO_VERSION="2.2.2"
 
 # Operating mode:
 #   test    — DEFAULT. Everything runs live but NOTHING enforces. Would-block

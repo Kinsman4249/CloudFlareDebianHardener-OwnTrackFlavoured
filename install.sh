@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# cf-owntracks installer (Debian 12) — v2.1.0
+# cf-owntracks installer (Debian 12) — v2.2.2
 #
 # (New to the bash idioms used here? See the guide at the top of
 #  lib/common.sh — every trick used below is explained there.)
@@ -40,7 +40,7 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 usage() {
     cat <<'EOF'
-cf-owntracks installer (v2.2.1)
+cf-owntracks installer (v2.2.2)
 
 USAGE
     sudo ./install.sh [options]

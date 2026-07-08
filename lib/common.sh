@@ -77,7 +77,7 @@
 # shellcheck disable=SC2034
 
 # ---- Version -------------------------------------------------------------------
-CFO_VERSION="2.2.1"
+CFO_VERSION="2.2.2"
 
 # ---- Paths -------------------------------------------------------------------
 # The ${VAR:-default} pattern lets tests (or unusual installs) override any of
@@ -778,9 +778,22 @@ attach_vhost_includes() {
     [[ -f "$vf" ]] || die "attach-vhost: file not found: $vf"
     grep -qE '^[[:space:]]*server[[:space:]{]' "$vf" || die "attach-vhost: no server block found in $vf"
 
-    # Keep a restorable copy right next to the file (never overwritten once
-    # created — it always holds the first-seen version).
-    [[ -f "${vf}.pre-cfo" ]] || cp -p "$vf" "${vf}.pre-cfo"
+    # Back the file up OUTSIDE any nginx-scanned directory. Debian's nginx
+    # includes sites-enabled/* (EVERY file, not just *.conf), so a backup left
+    # next to the vhost is itself loaded as a duplicate server for the same
+    # name — a "conflicting server name" that can shadow the real vhost (hit
+    # in production 2026-07-08). The state dir is never scanned by nginx.
+    local bak
+    bak="${CFO_STATE_DIR}/$(basename "$vf").pre-cfo"
+    mkdir -p "$CFO_STATE_DIR"
+    # Migrate + remove any stray backup a buggy earlier version dropped beside
+    # the vhost (that stray is exactly what causes the conflict).
+    if [[ -f "${vf}.pre-cfo" ]]; then
+        [[ -f "$bak" ]] || cp -p "${vf}.pre-cfo" "$bak"
+        rm -f "${vf}.pre-cfo"
+    fi
+    # First-seen copy, never overwritten once created.
+    [[ -f "$bak" ]] || cp -p "$vf" "$bak"
 
     # Clean slate: remove any existing cf-owntracks includes (marker block,
     # bare includes, manual comment) so we never end up with two sets.
@@ -811,11 +824,11 @@ attach_vhost_includes() {
 
     if ! nginx -t 2>&1; then
         log_error "attach-vhost: nginx -t failed after injection — restoring $vf"
-        cat "${vf}.pre-cfo" > "$vf"
+        cat "$bak" > "$vf"
         nginx -t >/dev/null 2>&1 || log_error "nginx config broken even after restore — manual attention required"
         die "attach-vhost: injection made nginx config invalid; original restored"
     fi
-    log_info "attach-vhost: includes injected into $vf (backup: ${vf}.pre-cfo)"
+    log_info "attach-vhost: includes injected into $vf (backup: ${bak})"
 }
 
 # detach_vhost_includes <vhost-file>

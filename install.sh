@@ -29,10 +29,25 @@ MODE
                               nginx 403s, mTLS verification).
 
 CORE SETTINGS (prompted interactively when omitted; existing config = defaults)
-    --server-name <host>      Public FQDN of the OwnTracks vhost
+    --server-name <host>      Public FQDN of the OwnTracks vhost.
+                              Auto-detected when omitted: nginx server_name
+                              directives first, reverse DNS of the public IP
+                              as fallback.
     --cert <path>             TLS certificate (fullchain)
     --key <path>              TLS private key
     --owntracks-port <port>   Local recorder port (default: 8083)
+
+AUTOMATIC ORIGIN CERTIFICATE (Cloudflare Origin CA)
+    --cf-auto-cert            Provision a 15-year origin certificate for the
+                              server name via the Cloudflare API instead of
+                              supplying --cert/--key. Reuses a still-valid
+                              existing cert. Credentials via environment
+                              (preferred: invisible to `ps`):
+                                  CF_ORIGIN_CA_KEY   Origin CA key ("v1.0-...")
+                                  CF_API_TOKEN       API token with
+                                                     Zone > SSL and Certificates > Edit
+    --cf-origin-ca-key <k>    Origin CA key on the command line
+    --cf-api-token <t>        API token on the command line
 
 ACCESS CONTROL
     --allow <ip-or-cidr>      Always-allow this source on the managed ports
@@ -67,12 +82,18 @@ ARG_MODE=""; ARG_MTLS=""; ARG_REDIRECT=""; ARG_ASN_FAILSAFE=""; ARG_ASNS=""
 ARG_INTERVAL=""; ARG_LOG_MAX=""; ARG_FORCE=""
 declare -a ARG_ALLOW=() ARG_MANAGE_PORTS=()
 ASSUME_YES=0; DRY_RUN=0; DO_UNINSTALL=0; DO_DIAGNOSTICS=0
+AUTO_CERT=0
+CF_ORIGIN_CA_KEY="${CF_ORIGIN_CA_KEY:-}"
+CF_API_TOKEN="${CF_API_TOKEN:-}"
 
 while (( $# )); do
     case "$1" in
         --server-name)          ARG_SERVER_NAME="$2"; shift 2 ;;
         --cert)                 ARG_CERT="$2"; shift 2 ;;
         --key)                  ARG_KEY="$2"; shift 2 ;;
+        --cf-auto-cert)         AUTO_CERT=1; shift ;;
+        --cf-origin-ca-key)     CF_ORIGIN_CA_KEY="$2"; AUTO_CERT=1; shift 2 ;;
+        --cf-api-token)         CF_API_TOKEN="$2"; AUTO_CERT=1; shift 2 ;;
         --owntracks-port)       ARG_PORT="$2"; shift 2 ;;
         --deploy)               ARG_MODE="deploy"; shift ;;
         --test)                 ARG_MODE="test"; shift ;;
@@ -217,6 +238,39 @@ if (( ${#ARG_MANAGE_PORTS[@]} > 0 )); then
     EXTRA_PORTS="${EXTRA_PORTS% }"
 fi
 
+# ---- Server-name auto-detection (when not provided by flag or prior config) --------
+# Chain: nginx server_name directives -> reverse DNS of the public IP.
+if [[ -z "$SERVER_NAME" ]] && (( DO_UNINSTALL == 0 )) && (( DO_DIAGNOSTICS == 0 )); then
+    HN_TMP="$(mktemp)"
+    discover_nginx_hostnames > "$HN_TMP" 2>/dev/null || true
+    HN_COUNT=$(grep -c . "$HN_TMP" || true)
+    if (( HN_COUNT >= 1 )); then
+        SERVER_NAME="$(head -1 "$HN_TMP")"
+        if (( HN_COUNT > 1 )); then
+            log_info "nginx serves ${HN_COUNT} hostnames:"
+            sed 's/^/          /' "$HN_TMP" >&2
+            log_info "auto-selected: ${SERVER_NAME} (change at the prompt or with --server-name)"
+        else
+            log_info "auto-detected server name from nginx: ${SERVER_NAME}"
+        fi
+    else
+        PUB_IP="$(detect_public_ip || true)"
+        if [[ -n "$PUB_IP" ]]; then
+            PTR_NAME="$(reverse_dns "$PUB_IP" || true)"
+            if [[ -n "$PTR_NAME" ]]; then
+                SERVER_NAME="$PTR_NAME"
+                log_info "auto-detected server name via reverse DNS: ${SERVER_NAME} (public IP ${PUB_IP})"
+                log_warn "PTR names are often generic (ISP/host default) — confirm this is the hostname Cloudflare fronts"
+            else
+                log_warn "no nginx server_name found and no PTR record for ${PUB_IP} — provide --server-name or answer the prompt"
+            fi
+        else
+            log_warn "no nginx server_name found and public IP undetectable — provide --server-name or answer the prompt"
+        fi
+    fi
+    rm -f "$HN_TMP"
+fi
+
 if (( UPGRADE_FROM_V1 == 1 )); then
     echo
     echo "=============================================================================="
@@ -247,8 +301,27 @@ if (( DO_DIAGNOSTICS == 0 )); then
     if (( INTERACTIVE == 1 )); then
         echo "Configuration (Enter accepts the [default]):"
         SERVER_NAME="$(prompt_val "Public FQDN for OwnTracks" "$SERVER_NAME")"
-        TLS_CERT="$(prompt_val "TLS certificate path (fullchain)" "$TLS_CERT")"
-        TLS_KEY="$(prompt_val "TLS private key path" "$TLS_KEY")"
+        # Offer automatic origin-cert provisioning when no usable cert is configured.
+        if (( AUTO_CERT == 0 )) && { [[ -z "$TLS_CERT" ]] || [[ ! -r "$TLS_CERT" ]]; }; then
+            if [[ "$(prompt_bool "Fetch an origin certificate from Cloudflare automatically?" 1)" == "1" ]]; then
+                AUTO_CERT=1
+            fi
+        fi
+        if (( AUTO_CERT == 1 )); then
+            if [[ -z "$CF_ORIGIN_CA_KEY" && -z "$CF_API_TOKEN" ]]; then
+                read -rs -p "  Cloudflare Origin CA key (v1.0-...) or API token [input hidden]: " _cfsecret </dev/tty
+                echo
+                if [[ "$_cfsecret" == v1.0-* ]]; then
+                    CF_ORIGIN_CA_KEY="$_cfsecret"
+                else
+                    CF_API_TOKEN="$_cfsecret"
+                fi
+                unset _cfsecret
+            fi
+        else
+            TLS_CERT="$(prompt_val "TLS certificate path (fullchain)" "$TLS_CERT")"
+            TLS_KEY="$(prompt_val "TLS private key path" "$TLS_KEY")"
+        fi
         OWNTRACKS_PORT="$(prompt_val "OwnTracks recorder port (127.0.0.1)" "$OWNTRACKS_PORT")"
         MTLS_ENABLED="$(prompt_bool "Enforce Authenticated Origin Pulls (mTLS)?" "$MTLS_ENABLED")"
         GLOBAL_REDIRECT="$(prompt_bool "Global 80->443 redirect for ALL sites?" "$GLOBAL_REDIRECT")"
@@ -447,12 +520,118 @@ if (( DO_DIAGNOSTICS == 1 )); then
     exit $?
 fi
 
+# ---- Automatic origin certificate (Cloudflare Origin CA) --------------------------------
+# Provisions a 15-year origin cert for $SERVER_NAME via the Cloudflare API.
+# Reuses the existing cert when it still covers the hostname with >30 days left.
+cf_auto_cert() {
+    local cert_out="/etc/ssl/cloudflare/origin.pem"
+    local key_out="/etc/ssl/cloudflare/origin.key"
+
+    if [[ -s "$cert_out" && -s "$key_out" ]] && \
+       openssl x509 -in "$cert_out" -noout -checkend 2592000 >/dev/null 2>&1 && \
+       openssl x509 -in "$cert_out" -noout -text 2>/dev/null | grep -qF "DNS:${SERVER_NAME}"; then
+        log_info "cf-auto-cert: existing origin cert covers ${SERVER_NAME} and is valid — reusing"
+        TLS_CERT="$cert_out"
+        TLS_KEY="$key_out"
+        return 0
+    fi
+
+    if [[ -z "$CF_ORIGIN_CA_KEY" && -z "$CF_API_TOKEN" ]]; then
+        die "cf-auto-cert: no credentials. Set CF_ORIGIN_CA_KEY (dashboard: SSL/TLS -> Origin Server -> Origin CA Key) or CF_API_TOKEN (Zone > SSL and Certificates > Edit), or pass --cf-origin-ca-key / --cf-api-token"
+    fi
+
+    log_info "cf-auto-cert: requesting a 15-year origin certificate for ${SERVER_NAME}"
+    local work
+    work="$(mktemp -d)"
+
+    if ! ( umask 077; openssl req -new -newkey rsa:2048 -nodes \
+            -keyout "${work}/origin.key" \
+            -subj "/CN=${SERVER_NAME}" \
+            -out "${work}/origin.csr" >/dev/null 2>&1 ); then
+        rm -rf "$work"
+        die "cf-auto-cert: CSR generation failed"
+    fi
+
+    # JSON-escape the CSR (real newlines -> literal \n).
+    local csr_esc
+    csr_esc="$(awk 'BEGIN{ORS="\\n"} {print}' "${work}/origin.csr")"
+
+    printf '{"hostnames":["%s"],"requested_validity":5475,"request_type":"origin-rsa","csr":"%s"}' \
+        "$SERVER_NAME" "$csr_esc" > "${work}/payload.json"
+
+    # Credential goes into a curl config file, never onto the argv (ps-safe).
+    if [[ -n "$CF_ORIGIN_CA_KEY" ]]; then
+        printf 'header = "X-Auth-User-Service-Key: %s"\n' "$CF_ORIGIN_CA_KEY" > "${work}/auth.cfg"
+    else
+        printf 'header = "Authorization: Bearer %s"\n' "$CF_API_TOKEN" > "${work}/auth.cfg"
+    fi
+    chmod 600 "${work}/auth.cfg"
+
+    local resp
+    if ! resp="$(curl -sS --max-time 30 -K "${work}/auth.cfg" \
+            -H 'Content-Type: application/json' \
+            --data @"${work}/payload.json" \
+            https://api.cloudflare.com/client/v4/certificates 2>&1)"; then
+        rm -rf "$work"
+        die "cf-auto-cert: API request failed: ${resp:0:200}"
+    fi
+
+    if ! grep -q '"success":[[:space:]]*true' <<<"$resp"; then
+        local apierr
+        apierr="$(grep -o '"message":"[^"]*"' <<<"$resp" | head -1 | sed 's/^"message":"//;s/"$//')"
+        rm -rf "$work"
+        die "cf-auto-cert: Cloudflare API error: ${apierr:-unrecognized response (check credential type/permissions)}"
+    fi
+
+    grep -o '"certificate":"[^"]*"' <<<"$resp" | head -1 \
+        | sed 's/^"certificate":"//;s/"$//' \
+        | sed 's/\\n/\n/g' > "${work}/origin.pem"
+
+    if ! openssl x509 -in "${work}/origin.pem" -noout >/dev/null 2>&1; then
+        rm -rf "$work"
+        die "cf-auto-cert: API returned an unparseable certificate"
+    fi
+
+    install -d -m 0755 /etc/ssl/cloudflare
+    install -m 0600 "${work}/origin.key" "$key_out"
+    install -m 0644 "${work}/origin.pem" "$cert_out"
+    rm -rf "$work"
+
+    TLS_CERT="$cert_out"
+    TLS_KEY="$key_out"
+    log_info "cf-auto-cert: installed ${cert_out} — expires $(openssl x509 -in "$cert_out" -noout -enddate 2>/dev/null | cut -d= -f2)"
+    log_info "cf-auto-cert: note — Origin CA certs are only trusted by Cloudflare, not by browsers connecting directly"
+}
+
 # ---- Pre-flight ------------------------------------------------------------------------
-[[ -n "$SERVER_NAME" ]] || die "--server-name required (or answer the prompt)"
-[[ -n "$TLS_CERT" ]] || die "--cert required (or answer the prompt)"
-[[ -n "$TLS_KEY"  ]] || die "--key required (or answer the prompt)"
-[[ -r "$TLS_CERT" ]] || die "TLS cert not readable: $TLS_CERT"
-[[ -r "$TLS_KEY"  ]] || die "TLS key not readable: $TLS_KEY"
+[[ -n "$SERVER_NAME" ]] || die "--server-name required (auto-detection found nothing; pass the flag or answer the prompt)"
+
+# Non-interactive convenience: no cert configured but CF credentials are in the
+# environment -> provision automatically.
+if (( AUTO_CERT == 0 )) && [[ -z "$TLS_CERT" ]] && [[ -n "$CF_ORIGIN_CA_KEY" || -n "$CF_API_TOKEN" ]]; then
+    log_info "no cert configured but Cloudflare credentials found in environment — enabling --cf-auto-cert"
+    AUTO_CERT=1
+fi
+
+if (( AUTO_CERT == 1 )); then
+    if (( DRY_RUN == 1 )); then
+        log_info "[--dry-run] would fetch a Cloudflare origin certificate for ${SERVER_NAME}"
+        TLS_CERT="${TLS_CERT:-/etc/ssl/cloudflare/origin.pem}"
+        TLS_KEY="${TLS_KEY:-/etc/ssl/cloudflare/origin.key}"
+    else
+        cf_auto_cert
+    fi
+fi
+
+[[ -n "$TLS_CERT" ]] || die "--cert required (or use --cf-auto-cert, or answer the prompt)"
+[[ -n "$TLS_KEY"  ]] || die "--key required (or use --cf-auto-cert, or answer the prompt)"
+if (( DRY_RUN == 1 )); then
+    [[ -r "$TLS_CERT" ]] || log_warn "[--dry-run] TLS cert not present yet: $TLS_CERT"
+    [[ -r "$TLS_KEY"  ]] || log_warn "[--dry-run] TLS key not present yet: $TLS_KEY"
+else
+    [[ -r "$TLS_CERT" ]] || die "TLS cert not readable: $TLS_CERT"
+    [[ -r "$TLS_KEY"  ]] || die "TLS key not readable: $TLS_KEY"
+fi
 
 if [[ -r /etc/os-release ]]; then
     # shellcheck disable=SC1091

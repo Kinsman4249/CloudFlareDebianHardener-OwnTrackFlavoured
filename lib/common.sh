@@ -10,7 +10,7 @@
 # shellcheck disable=SC2034
 
 # ---- Version -------------------------------------------------------------------
-CFO_VERSION="2.0.0"
+CFO_VERSION="2.1.0"
 
 # ---- Paths -------------------------------------------------------------------
 CFO_LIB_DIR="${CFO_LIB_DIR:-/usr/local/lib/cf-owntracks}"
@@ -492,6 +492,54 @@ discover_all_nginx_ports() {
         fi
     done < "$dump" | sort -un
     rm -f "$dump"
+}
+
+# ---- Hostname discovery -----------------------------------------------------------
+# All server_name values nginx knows about (any vhost), one per line, deduped.
+# Filters out catch-alls (_, *, localhost, bare IPs) and non-FQDN tokens.
+discover_nginx_hostnames() {
+    local dump
+    dump="$(mktemp)"
+    if ! nginx -T > "$dump" 2>/dev/null; then
+        rm -f "$dump"
+        return 1
+    fi
+    sed -n 's/^[[:space:]]*server_name[[:space:]]\+\([^;]*\);.*/\1/p' "$dump" \
+        | tr ' \t' '\n\n' \
+        | grep -v '^$' \
+        | grep -vE '^(_|\*|localhost)$' \
+        | grep -vE '^[0-9.]+$' \
+        | grep -E '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$' \
+        | sort -u
+    rm -f "$dump"
+    return 0
+}
+
+# Public IP of this box: Cloudflare's own trace endpoint, ipify fallback.
+detect_public_ip() {
+    local ip
+    ip="$(curl -fsS --max-time 8 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null \
+        | sed -n 's/^ip=//p' | head -1)"
+    if [[ -z "$ip" ]]; then
+        ip="$(curl -fsS --max-time 8 https://api.ipify.org 2>/dev/null || true)"
+    fi
+    [[ -n "$ip" ]] || return 1
+    printf '%s\n' "$ip"
+}
+
+# Reverse DNS (PTR) for an IP. Tries getent (NSS, always present), then
+# host/dig if installed. Echoes the name without trailing dot, or fails.
+reverse_dns() {
+    local ip="$1" name=""
+    name="$(getent hosts "$ip" 2>/dev/null | awk '{print $2}' | head -1)"
+    if [[ -z "$name" ]] && command -v host >/dev/null 2>&1; then
+        name="$(host "$ip" 2>/dev/null | sed -n 's/.*pointer \(.*\)\.$/\1/p' | head -1)"
+    fi
+    if [[ -z "$name" ]] && command -v dig >/dev/null 2>&1; then
+        name="$(dig +short -x "$ip" 2>/dev/null | sed 's/\.$//' | head -1)"
+    fi
+    [[ -n "$name" ]] || return 1
+    printf '%s\n' "$name"
 }
 
 # ---- SSH port detection ----------------------------------------------------------

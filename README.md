@@ -1,6 +1,6 @@
 # OwnTrackDebianHardener
 
-**Version 2.0.0**
+**Version 2.1.0**
 
 A Debian 12 daemon that locks down an [OwnTracks](https://owntracks.org/)
 deployment so only Cloudflare can reach it — with a **test-first workflow**:
@@ -61,16 +61,50 @@ log cap, extra allowlist IPs), showing defaults you can accept with Enter.
 On a box with a previous install, **your existing settings are the defaults —
 nothing is clobbered.**
 
-Non-interactive:
+Two things it works out on its own:
+
+- **Server name** — when you don't pass `--server-name` (and no prior config
+  exists), it reads the `server_name` directives from your running nginx and
+  offers what it finds; if nginx has none, it falls back to the reverse-DNS
+  PTR of the box's public IP. Always shown as a prompt default, never applied
+  silently — PTR names in particular are often generic ISP hostnames.
+- **The origin certificate** — see the next section.
+
+Non-interactive (with automatic cert):
 
 ```sh
-sudo ./install.sh \
+sudo CF_ORIGIN_CA_KEY=v1.0-xxxx ./install.sh \
     --server-name owntracks.example.com \
-    --cert /etc/ssl/cloudflare/origin.pem \
-    --key  /etc/ssl/cloudflare/origin.key \
+    --cf-auto-cert \
     --allow 203.0.113.7 \
     --yes
 ```
+
+### Automatic origin certificate (`--cf-auto-cert`)
+
+Instead of supplying `--cert`/`--key`, let the installer provision a
+**15-year Cloudflare Origin CA certificate** for the server name:
+
+1. It generates a private key + CSR locally (key never leaves the box).
+2. It calls Cloudflare's `POST /client/v4/certificates` API.
+3. The signed cert + key land at `/etc/ssl/cloudflare/origin.{pem,key}`
+   (key mode 0600). A still-valid existing cert covering the hostname
+   (>30 days left) is **reused, not reissued**.
+
+Credentials — one of, preferably via environment (invisible to `ps`):
+
+| Credential | Where to get it |
+|---|---|
+| `CF_ORIGIN_CA_KEY` (`v1.0-...`) | Cloudflare dashboard → SSL/TLS → Origin Server → **Origin CA Key** |
+| `CF_API_TOKEN` | Dashboard → My Profile → API Tokens → create with **Zone → SSL and Certificates → Edit** |
+
+In interactive installs the installer offers auto-provisioning whenever no
+usable cert path is configured, and asks for the credential with hidden
+input. Non-interactively, having a credential in the environment with no
+`--cert` configured enables it automatically. Because these are Origin CA
+certs, they're only trusted by Cloudflare — direct-access clients (your
+allowlisted IPs) will see an untrusted-cert warning, exactly as covered in
+the allowlist section.
 
 The install finishes with an **install summary + diagnostics block** that
 checks: Cloudflare endpoints (ips-v4/v6, origin-pull CA, RIPEstat), journald
@@ -87,8 +121,10 @@ sudo ./install.sh --diagnostics
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `--deploy` | test mode | Enforce. Without it you're observing only |
-| `--server-name <host>` | prompt/config | Public FQDN of the OwnTracks vhost |
-| `--cert <path> --key <path>` | prompt/config | TLS material (Cloudflare Origin CA cert recommended) |
+| `--server-name <host>` | auto-detect | Public FQDN (auto: nginx `server_name` → reverse-DNS PTR) |
+| `--cert <path> --key <path>` | prompt/config | TLS material (or use `--cf-auto-cert`) |
+| `--cf-auto-cert` | off | Provision a 15-year Origin CA cert via the Cloudflare API |
+| `--cf-origin-ca-key <k>` / `--cf-api-token <t>` | env | Credentials for `--cf-auto-cert` (prefer `CF_ORIGIN_CA_KEY` / `CF_API_TOKEN` env vars) |
 | `--owntracks-port <port>` | `8083` | Local recorder port |
 | `--allow <ip-or-cidr>` | — | Always-allow this source (repeatable; persisted) |
 | `--no-mtls` | mTLS on | Disable Authenticated Origin Pulls |

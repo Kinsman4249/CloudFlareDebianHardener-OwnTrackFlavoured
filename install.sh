@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# cf-owntracks installer (Debian 12) — v2.2.2
+# cf-owntracks installer (Debian 12) — v2.3.0
 #
 # (New to the bash idioms used here? See the guide at the top of
 #  lib/common.sh — every trick used below is explained there.)
@@ -40,7 +40,7 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 usage() {
     cat <<'EOF'
-cf-owntracks installer (v2.2.2)
+cf-owntracks installer (v2.3.0)
 
 USAGE
     sudo ./install.sh [options]
@@ -61,15 +61,18 @@ CORE SETTINGS (prompted interactively when omitted; existing config = defaults)
     --key <path>              TLS private key
     --owntracks-port <port>   Local recorder port (default: 8083)
 
-EXISTING VHOST (recommended when this host already has its own nginx config)
+EXISTING VHOST(S) (recommended when this host already has its own nginx config)
     --attach-vhost <file>     Layer protection into an EXISTING vhost instead
                               of generating a standalone one: injects the
                               three cf-owntracks include lines into each
                               server block of <file> (marker-delimited,
                               idempotent, reverted on --uninstall). Your auth,
-                              locations, and routing stay untouched. The path
-                              persists in config — future runs reuse it and
-                              never create a competing vhost.
+                              locations, and routing stay untouched.
+                              REPEATABLE — pass it multiple times to protect
+                              several services at once; interactive runs also
+                              prompt to add more. The set is additive and
+                              persists in config, so a later run naming a new
+                              vhost just adds it (never a competing vhost).
     --force-own-vhost         Generate our own vhost even though another vhost
                               already claims the server name (NOT recommended:
                               nginx ignores duplicate server names, which
@@ -120,10 +123,10 @@ EOF
 ARG_SERVER_NAME=""; ARG_CERT=""; ARG_KEY=""; ARG_PORT=""
 ARG_MODE=""; ARG_MTLS=""; ARG_REDIRECT=""; ARG_ASN_FAILSAFE=""; ARG_ASNS=""
 ARG_INTERVAL=""; ARG_LOG_MAX=""; ARG_FORCE=""
-declare -a ARG_ALLOW=() ARG_MANAGE_PORTS=()       # repeatable flags -> arrays
+declare -a ARG_ALLOW=() ARG_MANAGE_PORTS=() ARG_ATTACH_VHOSTS=()  # repeatable -> arrays
 ASSUME_YES=0; DRY_RUN=0; DO_UNINSTALL=0; DO_DIAGNOSTICS=0
 AUTO_CERT=0
-ARG_ATTACH_VHOST=""; FORCE_OWN_VHOST=0
+FORCE_OWN_VHOST=0
 # Environment credentials are honored as-is; flags below can override them.
 CF_ORIGIN_CA_KEY="${CF_ORIGIN_CA_KEY:-}"
 CF_API_TOKEN="${CF_API_TOKEN:-}"
@@ -139,7 +142,7 @@ while (( $# )); do
         --cf-origin-ca-key)     CF_ORIGIN_CA_KEY="$2"; AUTO_CERT=1; shift 2 ;;
         --cf-api-token)         CF_API_TOKEN="$2"; AUTO_CERT=1; shift 2 ;;
         --owntracks-port)       ARG_PORT="$2"; shift 2 ;;
-        --attach-vhost)         ARG_ATTACH_VHOST="$2"; shift 2 ;;
+        --attach-vhost)         ARG_ATTACH_VHOSTS+=("$2"); shift 2 ;;
         --force-own-vhost)      FORCE_OWN_VHOST=1; shift ;;
         --deploy)               ARG_MODE="deploy"; shift ;;
         --test)                 ARG_MODE="test"; shift ;;
@@ -245,10 +248,14 @@ do_uninstall() {
     fi
     rm -f /etc/nftables.d/cf-owntracks.conf 2>/dev/null || true
 
-    # Attach mode: pull our include lines back out of the operator's vhost
-    # (their file, their app — only our marker-delimited stanza goes).
+    # Attach mode: pull our include lines back out of each operator vhost
+    # (their files, their apps — only our marker-delimited stanza goes).
+    # CFO_ATTACH_VHOST is a space-separated list; unquoted so it word-splits.
     if [[ -n "${CFO_ATTACH_VHOST:-}" ]]; then
-        detach_vhost_includes "$CFO_ATTACH_VHOST"
+        for _vf in ${CFO_ATTACH_VHOST}; do
+            detach_vhost_includes "$_vf"
+        done
+        unset _vf
     fi
 
     # Remove every nginx piece we own, then reload if the config still parses.
@@ -302,7 +309,6 @@ ASN_FAILSAFE="${ARG_ASN_FAILSAFE:-${CFO_ASN_FAILSAFE:-1}}"
 CF_ASNS="${ARG_ASNS:-${CFO_CF_ASNS:-13335}}"
 TEST_LOG_MAX_MB="${ARG_LOG_MAX:-${CFO_TEST_LOG_MAX_MB:-15}}"
 REFRESH_INTERVAL="${ARG_INTERVAL:-6h}"
-ATTACH_VHOST="${ARG_ATTACH_VHOST:-${CFO_ATTACH_VHOST:-}}"
 EXTRA_PORTS="${CFO_EXTRA_PORTS:-}"
 if (( ${#ARG_MANAGE_PORTS[@]} > 0 )); then
     # Merge config extras with --manage-port flags: numbers only, dedupe,
@@ -311,6 +317,27 @@ if (( ${#ARG_MANAGE_PORTS[@]} > 0 )); then
     EXTRA_PORTS="$(printf '%s\n' $EXTRA_PORTS "${ARG_MANAGE_PORTS[@]}" | grep -E '^[0-9]+$' | sort -un | tr '\n' ' ')"
     EXTRA_PORTS="${EXTRA_PORTS% }"
 fi
+
+# ---- Attached vhosts (multi-service) ------------------------------------------------
+# The tool can layer its protection into ONE OR MORE existing nginx vhosts
+# instead of generating its own. The set is ADDITIVE and PERSISTENT: it starts
+# from the config's stored list, then every --attach-vhost flag (repeatable)
+# and every interactive answer ADDS to it. That is what "add another service"
+# means — a later run naming a new vhost extends the set rather than replacing
+# it. Removal is via --uninstall (detaches all) or editing CFO_ATTACH_VHOST.
+declare -a ATTACH_LIST=()
+# Seed from the persisted, space-separated config value.
+if [[ -n "${CFO_ATTACH_VHOST:-}" ]]; then
+    read -r -a ATTACH_LIST <<<"$CFO_ATTACH_VHOST"
+fi
+# Append a vhost path to ATTACH_LIST unless it is already present (dedupe).
+_add_attach() {
+    local x="$1" e
+    for e in "${ATTACH_LIST[@]}"; do [[ "$e" == "$x" ]] && return 0; done
+    ATTACH_LIST+=("$x")
+}
+for _v in "${ARG_ATTACH_VHOSTS[@]}"; do _add_attach "$_v"; done
+unset _v
 
 # ---- Server-name auto-detection (when not provided by flag or prior config) --------
 # Chain: OwnTracks recorder config -> nginx server_name directives -> reverse
@@ -435,9 +462,34 @@ if (( DO_DIAGNOSTICS == 0 )); then
             read -r -a extra_arr <<<"$extra_allow"
             ARG_ALLOW+=("${extra_arr[@]}")
         fi
+
+        # Protect additional EXISTING vhosts (one or more). Layering into your
+        # own vhost is the recommended way to cover another service — see the
+        # "Beyond OwnTracks" section of the README. Blank answer = done.
+        if (( ${#ATTACH_LIST[@]} > 0 )); then
+            echo "  Already protecting these vhost file(s):"
+            printf '      %s\n' "${ATTACH_LIST[@]}"
+        fi
+        while :; do
+            _av="$(prompt_val "Protect an existing nginx vhost file? path (blank = done)" "")"
+            [[ -z "$_av" ]] && break
+            if [[ ! -f "$_av" ]]; then
+                echo "      not found: $_av" >&2; continue
+            fi
+            if ! grep -qE '^[[:space:]]*server[[:space:]{]' "$_av"; then
+                echo "      no server block in: $_av" >&2; continue
+            fi
+            _add_attach "$_av"
+            echo "      will protect: $_av"
+        done
+        unset _av
         echo
     fi
 fi
+
+# Space-joined form of the attach set, for the config file, guards, and summary
+# (built AFTER interactive so it includes anything added at the prompt).
+ATTACH_VHOST="${ATTACH_LIST[*]}"
 
 # ---- Validation ---------------------------------------------------------------------
 [[ "$OWNTRACKS_PORT" =~ ^[0-9]+$ ]] || die "recorder port must be numeric: $OWNTRACKS_PORT"
@@ -533,14 +585,19 @@ run_diagnostics() {
         d_fail "nginx: CONFLICTING SERVER NAME — another vhost claims the same host:port, so the cf-owntracks vhost is IGNORED (no decision log, no enforcement at nginx level). Find it: grep -RIl '${CFO_SERVER_NAME:-<your-server-name>}' /etc/nginx/sites-enabled/ — then rerun the installer with --attach-vhost <that-file>."
     fi
 
-    # Attach mode: our protection lives inside the operator's vhost — verify
-    # the marker-delimited includes are actually present.
+    # Attach mode: our protection lives inside each operator vhost — verify the
+    # marker-delimited includes are present in every one. (Space-separated list;
+    # unquoted so it word-splits.)
     if [[ -n "${CFO_ATTACH_VHOST:-}" ]]; then
-        if grep -qF 'cf-owntracks includes (managed)' "$CFO_ATTACH_VHOST" 2>/dev/null; then
-            d_pass "attach mode: includes present in ${CFO_ATTACH_VHOST}"
-        else
-            d_fail "attach mode: includes MISSING from ${CFO_ATTACH_VHOST} — rerun the installer"
-        fi
+        local _vf
+        for _vf in ${CFO_ATTACH_VHOST}; do
+            if grep -qF 'cf-owntracks includes (managed)' "$_vf" 2>/dev/null; then
+                d_pass "attach mode: includes present in ${_vf}"
+            else
+                d_fail "attach mode: includes MISSING from ${_vf} — rerun the installer"
+            fi
+        done
+        unset _vf
     fi
 
     # 4. Ports: managed / ssh / other — and the SSH-exclusion proof.
@@ -845,11 +902,16 @@ if ! check_ssh_reachable "$BACKEND"; then
 fi
 
 # Attach mode validation + the conflicting-vhost guard.
-if [[ -n "$ATTACH_VHOST" ]]; then
-    [[ -f "$ATTACH_VHOST" ]] || die "--attach-vhost: file not found: $ATTACH_VHOST"
-    grep -qE '^[[:space:]]*server[[:space:]{]' "$ATTACH_VHOST" \
-        || die "--attach-vhost: no server block found in $ATTACH_VHOST"
-    log_info "attach mode: protection will be layered into ${ATTACH_VHOST}"
+if (( ${#ATTACH_LIST[@]} > 0 )); then
+    # One or more existing vhosts: validate each and we're done — no vhost of
+    # our own is generated, so there is nothing to conflict with.
+    for _vf in "${ATTACH_LIST[@]}"; do
+        [[ -f "$_vf" ]] || die "--attach-vhost: file not found: $_vf"
+        grep -qE '^[[:space:]]*server[[:space:]{]' "$_vf" \
+            || die "--attach-vhost: no server block found in $_vf"
+    done
+    unset _vf
+    log_info "attach mode: protection will be layered into ${#ATTACH_LIST[@]} vhost(s): ${ATTACH_VHOST}"
 else
     # Not attaching — creating our own vhost. If ANOTHER enabled vhost already
     # claims this server name, nginx will ignore one of the two ("conflicting
@@ -1021,13 +1083,16 @@ EOF
     # v1 leftover cleanup: the old allow snippet is no longer referenced.
     rm -f "$CFO_NGINX_LEGACY_ALLOW_SNIPPET"
 
-    if [[ -n "$ATTACH_VHOST" ]]; then
-        # Attach mode: the operator's vhost is the app; we only add our three
-        # include lines to it. Any previously-generated standalone vhost is
-        # removed so it can never shadow (or be shadowed by) the real one.
+    if (( ${#ATTACH_LIST[@]} > 0 )); then
+        # Attach mode: the operator's vhost(s) are the apps; we only add our
+        # three include lines to each. Any previously-generated standalone
+        # vhost is removed so it can never shadow (or be shadowed by) them.
         log_info "attach mode: standing down any generated vhost"
         rm -f "$CFO_NGINX_VHOST" "$CFO_NGINX_VHOST_ENABLED"
-        attach_vhost_includes "$ATTACH_VHOST"
+        local _vf
+        for _vf in "${ATTACH_LIST[@]}"; do
+            attach_vhost_includes "$_vf"
+        done
     else
         log_info "rendering OwnTracks vhost"
         render_vhost > "$CFO_NGINX_VHOST"
@@ -1102,8 +1167,9 @@ fi
 echo "  ----------------------------------------------------------------------------"
 echo "  server:       https://${SERVER_NAME} (recorder on 127.0.0.1:${OWNTRACKS_PORT})"
 echo "  backend:      ${BACKEND}    mTLS: ${MTLS_ENABLED}    ASN failsafe: ${ASN_FAILSAFE}"
-if [[ -n "$ATTACH_VHOST" ]]; then
-    echo "  vhost:        ATTACHED to ${ATTACH_VHOST} (your config; our includes are marker-delimited)"
+if (( ${#ATTACH_LIST[@]} > 0 )); then
+    echo "  vhost(s):     ATTACHED to ${ATTACH_VHOST}"
+    echo "                (your configs; our includes are marker-delimited, removed on --uninstall)"
 fi
 echo "  refresh:      every ${REFRESH_INTERVAL} + auto-retry ~30min after failures"
 echo "  allowlist:    ${CFO_ALLOWLIST_FILE} (edit + wait for refresh, or: systemctl start cf-owntracks.service)"

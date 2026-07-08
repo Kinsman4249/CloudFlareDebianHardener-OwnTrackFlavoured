@@ -6,8 +6,9 @@
 # executed on its own. That's why there is no `set -e` here: those settings
 # would leak into whichever script loads us.
 #
-# v2.1.0 — mode model (test/deploy), dynamic port discovery, SSH guarantee,
-# localhost + allowlist, ASN failsafe, NDJSON decision log.
+# v2.3.0 — mode model (test/deploy), dynamic port discovery, SSH guarantee,
+# localhost + allowlist, ASN failsafe, NDJSON decision log, and attach mode
+# (layer into one or more existing operator vhosts instead of generating one).
 # =============================================================================
 #
 # ---------------------------------------------------------------------------
@@ -77,7 +78,7 @@
 # shellcheck disable=SC2034
 
 # ---- Version -------------------------------------------------------------------
-CFO_VERSION="2.2.2"
+CFO_VERSION="2.3.0"
 
 # ---- Paths -------------------------------------------------------------------
 # The ${VAR:-default} pattern lets tests (or unusual installs) override any of
@@ -569,24 +570,28 @@ _listen_to_port() {
     # we don't emit those; our managed vhosts always specify a port.
 }
 
-# parse_managed_ports_from_dump <nginx-T-dump-file> [attached-vhost-path]
+# parse_managed_ports_from_dump <nginx-T-dump-file> [attached-vhost-list]
 # Reads an `nginx -T` dump and emits the listen ports found in the config files
-# this tool manages (owntracks vhost + optional global redirect + the operator
-# vhost named by --attach-vhost, when set), sorted unique.
+# this tool manages (owntracks vhost + optional global redirect + every operator
+# vhost named by --attach-vhost, when set), sorted unique. The second argument
+# is a SPACE-SEPARATED list of attached vhost paths (one or many).
 # `nginx -T` marks each file's content with a "# configuration file <path>:"
 # header line — the loop below tracks whether we are inside one of OUR files.
 parse_managed_ports_from_dump() {
     local dump="$1" attach="${2:-}"
-    local in_managed=0 line port
+    local in_managed=0 line port a
     while IFS= read -r line; do
         case "$line" in
             "# configuration file "*)
+                in_managed=0
                 if [[ "$line" == *"/owntracks.conf"* ]] || \
-                   [[ "$line" == *"/00-cf-global-redirect.conf"* ]] || \
-                   { [[ -n "$attach" ]] && [[ "$line" == "# configuration file ${attach}:" ]]; }; then
+                   [[ "$line" == *"/00-cf-global-redirect.conf"* ]]; then
                     in_managed=1
-                else
-                    in_managed=0
+                elif [[ -n "$attach" ]]; then
+                    # Match the header against any path in the attach list.
+                    for a in $attach; do
+                        [[ "$line" == "# configuration file ${a}:" ]] && in_managed=1
+                    done
                 fi
                 ;;
             *)

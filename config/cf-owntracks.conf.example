@@ -3,7 +3,7 @@
 # `systemctl start cf-owntracks.service` to apply changes.
 
 # Version marker written by the installer (informational).
-CFO_VERSION="2.2.2"
+CFO_VERSION="2.3.0"
 
 # Operating mode:
 #   test    — DEFAULT. Everything runs live but NOTHING enforces. Would-block
@@ -45,9 +45,11 @@ CFO_EXTRA_PORTS=""
 # Decision log size cap in MB (test mode). Rotated to .1 when exceeded.
 CFO_TEST_LOG_MAX_MB=15
 
-# Attach mode: path of an operator-owned vhost that carries the cf-owntracks
-# include lines instead of a generated standalone vhost. Empty = the installer
-# generates and manages its own vhost. Set via install.sh --attach-vhost.
+# Attach mode: SPACE-SEPARATED list of operator-owned vhost files that carry
+# the cf-owntracks include lines instead of a generated standalone vhost.
+# Empty = the installer generates and manages its own vhost. One or many;
+# set via (repeatable) install.sh --attach-vhost or the interactive prompt.
+# Example: CFO_ATTACH_VHOST="/etc/nginx/sites-enabled/owntracks /etc/nginx/sites-enabled/grafana"
 CFO_ATTACH_VHOST=""
 
 # Operator allowlist lives in /etc/cf-owntracks/allowlist (one IP/CIDR per

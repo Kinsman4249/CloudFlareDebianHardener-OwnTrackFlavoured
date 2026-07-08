@@ -1,6 +1,6 @@
 # OwnTrackDebianHardener
 
-**Version 2.2.2**
+**Version 2.3.0**
 
 A Debian 12 daemon that locks down an [OwnTracks](https://owntracks.org/)
 deployment so only Cloudflare can reach it — with a **test-first workflow**:
@@ -90,8 +90,36 @@ Two ways to point it at them:
   it `--server-name app.example.com --owntracks-port <your-backend-port>`; it
   generates a vhost proxying to `127.0.0.1:<port>`.
 
-Run one instance per box; multiple server blocks in an attached vhost (and
-`--manage-port`) let it cover several sites at once.
+### Protecting several services at once
+
+`--attach-vhost` is **repeatable**, and the set is **additive + persistent** —
+so adding another service is easy, interactively or not:
+
+```sh
+# Non-interactive: protect three vhosts in one go
+sudo bash install.sh \
+    --attach-vhost /etc/nginx/sites-enabled/owntracks \
+    --attach-vhost /etc/nginx/sites-enabled/grafana \
+    --attach-vhost /etc/nginx/sites-enabled/nextcloud --yes
+
+# Add one more later — it's ADDED to the set, not replaced
+sudo bash install.sh --attach-vhost /etc/nginx/sites-enabled/gitea --yes
+```
+
+Run the installer with no flags and it **prompts** for each setting, then loops:
+`Protect an existing nginx vhost file? path (blank = done)` — enter as many as
+you like. Whatever you add persists in `CFO_ATTACH_VHOST` and is reused on every
+future run. Each vhost gets the include stanza in every one of its server
+blocks; managed-port discovery reads the `listen` directives of all of them; and
+`--uninstall` cleanly detaches from every file.
+
+To stop protecting one service, remove its path from `CFO_ATTACH_VHOST` in
+`/etc/cf-owntracks/config` and re-run the installer (its includes are left in
+place until then; delete the marker block by hand if you want them gone
+immediately), or `--uninstall` to detach from all.
+
+One `cf-owntracks` daemon covers every attached vhost — there's no need to run
+multiple instances.
 
 ### Requirements and limits (read before repurposing)
 

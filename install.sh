@@ -40,7 +40,7 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 usage() {
     cat <<'EOF'
-cf-owntracks installer (v2.2.0)
+cf-owntracks installer (v2.2.1)
 
 USAGE
     sudo ./install.sh [options]

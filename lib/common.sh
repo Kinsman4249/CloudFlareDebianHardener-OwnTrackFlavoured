@@ -77,7 +77,7 @@
 # shellcheck disable=SC2034
 
 # ---- Version -------------------------------------------------------------------
-CFO_VERSION="2.2.0"
+CFO_VERSION="2.2.1"
 
 # ---- Paths -------------------------------------------------------------------
 # The ${VAR:-default} pattern lets tests (or unusual installs) override any of
@@ -743,25 +743,48 @@ reverse_dns() {
 CFO_ATTACH_MARKER_BEGIN="# >>> cf-owntracks includes (managed) >>>"
 CFO_ATTACH_MARKER_END="# <<< cf-owntracks includes <<<"
 
+# _strip_cfo_includes <vhost-file>
+# Removes ALL prior cf-owntracks include traces from a vhost, whatever their
+# origin: our marker-delimited block, bare `include .../cloudflare-*.conf;`
+# lines added by hand, and the "# --- cf-owntracks protection ---" comment a
+# manual setup might carry. This is what makes attach idempotent against a
+# file that already has includes from any source — without it, a second set
+# would double-include a snippet and duplicate `real_ip_header` (which nginx
+# rejects; hit in production 2026-07-08 on a hand-edited vhost).
+_strip_cfo_includes() {
+    local vf="$1" tmp
+    tmp="$(mktemp)"
+    # `\#...#` uses '#' as the sed delimiter so the '/' in paths needs no
+    # escaping. First expression deletes the whole marker block as a range;
+    # the rest delete any stray snippet includes and our manual comment line.
+    sed -e '/>>> cf-owntracks includes (managed) >>>/,/<<< cf-owntracks includes <<</d' \
+        -e '\#include[^;]*snippets/cloudflare-realip\.conf#d' \
+        -e '\#include[^;]*snippets/cloudflare-mtls\.conf#d' \
+        -e '\#include[^;]*snippets/cloudflare-enforce\.conf#d' \
+        -e '/# --- cf-owntracks protection/d' \
+        "$vf" > "$tmp"
+    cat "$tmp" > "$vf"
+    rm -f "$tmp"
+}
+
 # attach_vhost_includes <vhost-file>
-# Inserts the include lines after the FIRST server_name directive of each
-# server block (one injection per block — a duplicate real_ip_header would
-# fail nginx -t). Validates with nginx -t afterwards; on failure the original
-# file is restored and we die. A one-time backup is left at <file>.pre-cfo.
+# Strips any prior cf-owntracks includes, then inserts exactly one include
+# stanza after the FIRST server_name directive of each server block (one per
+# block — a duplicate real_ip_header would fail nginx -t). Validates with
+# nginx -t afterwards; on failure the original file is restored and we die.
+# A one-time backup is left at <file>.pre-cfo.
 attach_vhost_includes() {
     local vf="$1"
     [[ -f "$vf" ]] || die "attach-vhost: file not found: $vf"
     grep -qE '^[[:space:]]*server[[:space:]{]' "$vf" || die "attach-vhost: no server block found in $vf"
 
-    # Idempotency: if our marker is already there, there is nothing to do.
-    if grep -qF "$CFO_ATTACH_MARKER_BEGIN" "$vf"; then
-        log_info "attach-vhost: includes already present in $vf"
-        return 0
-    fi
-
     # Keep a restorable copy right next to the file (never overwritten once
-    # created — it always holds the pre-cf-owntracks original).
+    # created — it always holds the first-seen version).
     [[ -f "${vf}.pre-cfo" ]] || cp -p "$vf" "${vf}.pre-cfo"
+
+    # Clean slate: remove any existing cf-owntracks includes (marker block,
+    # bare includes, manual comment) so we never end up with two sets.
+    _strip_cfo_includes "$vf"
 
     local tmp
     tmp="$(mktemp)"
@@ -796,18 +819,14 @@ attach_vhost_includes() {
 }
 
 # detach_vhost_includes <vhost-file>
-# Removes everything between (and including) our marker lines. Safe to call
-# when the file or the markers don't exist.
+# Removes all cf-owntracks include traces (marker block + any bare snippet
+# includes). Safe to call when the file or the includes don't exist.
 detach_vhost_includes() {
     local vf="$1"
     [[ -f "$vf" ]] || return 0
-    grep -qF "$CFO_ATTACH_MARKER_BEGIN" "$vf" || return 0
-    local tmp
-    tmp="$(mktemp)"
-    # sed range delete: from the begin marker line to the end marker line.
-    sed '/>>> cf-owntracks includes (managed) >>>/,/<<< cf-owntracks includes <<</d' "$vf" > "$tmp"
-    cat "$tmp" > "$vf"
-    rm -f "$tmp"
+    # Nothing to do if no trace of us is present (avoids a needless rewrite).
+    grep -qE "cf-owntracks includes|snippets/cloudflare-(realip|mtls|enforce)\.conf" "$vf" || return 0
+    _strip_cfo_includes "$vf"
     log_info "attach-vhost: includes removed from $vf"
 }
 

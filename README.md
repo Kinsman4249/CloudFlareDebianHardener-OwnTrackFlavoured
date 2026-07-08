@@ -1,6 +1,6 @@
 # OwnTrackDebianHardener
 
-**Version 2.2.0**
+**Version 2.2.1**
 
 A Debian 12 daemon that locks down an [OwnTracks](https://owntracks.org/)
 deployment so only Cloudflare can reach it — with a **test-first workflow**:

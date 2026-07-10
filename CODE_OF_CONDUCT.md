@@ -17,7 +17,7 @@ This Code of Conduct applies to all project spaces: the GitHub repository (issue
 
 ## Reporting
 
-If you observe behavior that violates this Code of Conduct, please open a private report via the **[Security Advisories tab](https://github.com/Kinsman4249/OwnTrackDebianHardener/security/advisories/new)** of the repository. Reports are read by the project maintainer only and handled confidentially.
+If you observe behavior that violates this Code of Conduct, please open a private report via the **[Security Advisories tab](https://github.com/Kinsman4249/CloudFlareDebianHardener-OwnTrackFlavoured/security/advisories/new)** of the repository. Reports are read by the project maintainer only and handled confidentially.
 
 When reporting, include:
 

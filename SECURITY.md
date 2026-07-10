@@ -18,7 +18,7 @@ If you find a security issue in this project, **please do not file a public GitH
 
 Instead, open a private GitHub Security Advisory:
 
-1. Go to the [Security tab](https://github.com/Kinsman4249/OwnTrackDebianHardener/security) of this repository.
+1. Go to the [Security tab](https://github.com/Kinsman4249/CloudFlareDebianHardener-OwnTrackFlavoured/security) of this repository.
 2. Click **"Report a vulnerability"**.
 3. Provide as much detail as possible: affected version, reproduction steps, impact, and any suggested mitigation.
 
